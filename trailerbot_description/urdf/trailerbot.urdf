@@ -113,6 +113,11 @@
 
     <!-- Visual hitch bar from robot base to trailer pivot -->
     <link name="drawbar_link">
+        <inertial>
+            <mass value="0.5"/>
+            <inertia ixx="0.01" ixy="0.0" ixz="0.0"
+                    iyy="0.01" iyz="0.0" izz="0.01"/>
+        </inertial>
         <visual>
             <origin xyz="0 0 0.0" rpy="0 0 0"/>
             <geometry>
@@ -146,6 +151,15 @@
                 <color rgba="1.0 0.9 0.1 1.0"/>
             </material>
         </visual>
+        <!-- Add collision too, good practice -->
+        <collision>
+            <geometry><sphere radius="0.08"/></geometry>
+        </collision>
+        <inertial>
+            <mass value="0.1"/>
+            <inertia ixx="0.001" ixy="0.0" ixz="0.0"
+                    iyy="0.001" iyz="0.0" izz="0.001"/>
+        </inertial>
     </link>
 
     <joint name="pivot_marker_joint" type="fixed">
@@ -155,7 +169,7 @@
     </joint>
 
 
-    <joint name="pivot_marker_drawbar_joint" type="revolute">
+    <joint name="pivot_marker_drawbar_joint" type="continuous">
         <parent link="pivot_marker_link"/>
         <child link="drawbar_link"/>
         <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -358,6 +372,18 @@
             <frame_id>odom</frame_id>
             <child_frame_id>base_footprint</child_frame_id>
             <odom_publish_frequency>50</odom_publish_frequency>
+        </plugin>
+        <!-- <plugin filename="gz-sim-joint-state-publisher-system"
+            name="gz::sim::systems::JointStatePublisher">
+        <joint_name>pivot_marker_drawbar_joint</joint_name>
+    </plugin> -->
+    </gazebo>
+    <gazebo>
+        <plugin filename="gz-sim-joint-state-publisher-system"
+                name="gz::sim::systems::JointStatePublisher">
+            <joint_name>pivot_marker_drawbar_joint</joint_name>
+            <joint_name>left_wheel_joint</joint_name>
+            <joint_name>right_wheel_joint</joint_name>
         </plugin>
     </gazebo>
 
