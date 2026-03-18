@@ -1,0 +1,364 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<robot name="trailerbot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+    <link name="base_footprint"/>
+
+    <link name="base_link">
+        <visual>
+            <geometry>
+                <box size="1.0 0.5 0.25"/>
+            </geometry>
+            <material name="blue">
+                <color rgba="0 0 1 1"/>
+            </material>
+        </visual>
+        <collision>
+            <geometry>
+                <box size="1.0 0.5 0.25"/>
+            </geometry>
+        </collision>
+        <inertial>
+            <mass value="1.0"/>
+            <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
+        </inertial>
+    </link>
+
+    <joint name="base_footprint_joint" type="fixed">
+        <parent link="base_footprint"/>
+        <child link="base_link"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+
+    <link name="left_wheel">
+        <visual>
+            <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+            <geometry>
+                <cylinder length="0.1" radius="0.1"/>
+            </geometry>
+            <material name="red">
+                <color rgba="1 0 0 1"/>
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+            <geometry>
+                <cylinder length="0.1" radius="0.1"/>
+            </geometry>
+        </collision>
+        <inertial>
+            <mass value="0.1"/>
+            <inertia ixx="0.001" ixy="0.0" ixz="0.0" iyy="0.001" iyz="0.0" izz="0.001"/>
+        </inertial>
+    </link>
+
+    <link name="right_wheel">
+        <visual>
+            <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+            <geometry>
+                <cylinder length="0.1" radius="0.1"/>
+            </geometry>
+            <material name="red"/>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+            <geometry>
+                <cylinder length="0.1" radius="0.1"/>
+            </geometry>
+        </collision>
+        <inertial>
+            <mass value="0.1"/>
+            <inertia ixx="0.001" ixy="0.0" ixz="0.0" iyy="0.001" iyz="0.0" izz="0.001"/>
+        </inertial>
+    </link>
+
+
+    <joint name="left_wheel_joint" type="continuous">
+        <parent link="base_link"/>
+        <child link="left_wheel"/>
+        <origin xyz="-0.25 0.25 -0.125" rpy="0 0 0"/>
+        <axis xyz="0 1 0"/>
+    </joint>
+
+    <joint name="right_wheel_joint" type="continuous">
+        <parent link="base_link"/>
+        <child link="right_wheel"/>
+        <origin xyz="-0.25 -0.25 -0.125" rpy="0 0 0"/>
+        <axis xyz="0 1 0"/>
+    </joint>
+
+    <link name="caster_wheel">
+        <visual>
+            <geometry>
+                <sphere radius="0.1"/>
+            </geometry>
+            <material name="red"/>
+        </visual>
+        <collision>
+            <geometry>
+                <sphere radius="0.1"/>
+            </geometry>
+        </collision>
+        <inertial>
+            <mass value="0.05"/>
+            <inertia ixx="0.0005" ixy="0.0" ixz="0.0" iyy="0.0005" iyz="0.0" izz="0.0005"/>
+        </inertial>
+    </link>
+
+    <joint name="caster_wheel_joint" type="fixed">
+        <parent link="base_link"/>
+        <child link="caster_wheel"/>
+        <origin xyz="0.35 0 -0.125" rpy="0 1.571 0"/>
+    </joint>
+
+    <!-- Visual hitch bar from robot base to trailer pivot -->
+    <link name="drawbar_link">
+        <visual>
+            <origin xyz="0 0 0.0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.5 0.08 0.08"/>
+            </geometry>
+            <material name="dark_gray">
+                <color rgba="0.2 0.2 0.2 1.0"/>
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0.0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.5 0.08 0.08"/>
+            </geometry>
+        </collision>
+    </link>
+
+    <!-- <joint name="drawbar_joint" type="fixed">
+        <parent link="container"/>
+        <child link="drawbar_link"/>
+        <origin xyz="1.5 0 -0.5" rpy="0 0 0"/>
+    </joint> -->
+
+    <!-- Visual marker at the articulation point -->
+    <link name="pivot_marker_link">
+        <visual>
+            <geometry>
+                <sphere radius="0.08"/>
+            </geometry>
+            <material name="yellow">
+                <color rgba="1.0 0.9 0.1 1.0"/>
+            </material>
+        </visual>
+    </link>
+
+    <joint name="pivot_marker_joint" type="fixed">
+        <parent link="trailer_link"/>
+        <child link="pivot_marker_link"/>
+        <origin xyz="-0.25 0 0.0" rpy="0 0 0"/>
+    </joint>
+
+
+    <joint name="pivot_marker_drawbar_joint" type="revolute">
+        <parent link="pivot_marker_link"/>
+        <child link="drawbar_link"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <axis xyz="0 0 1"/>
+        <limit lower="-1.57" upper="1.57" effort="10" velocity="1"/>
+    </joint>
+
+    <link name="container">
+        <visual>
+            <geometry>
+                <box size="3.0 1.0 1.0"/>
+            </geometry>
+            <material name="green">
+                <color rgba="0 1 0 1"/>
+            </material>
+        </visual>
+        <collision>
+            <geometry>
+                <box size="3.0 1.0 1.0"/>
+            </geometry>
+        </collision>
+        <inertial>
+            <mass value="20.0"/>
+            <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
+        </inertial>
+    </link>
+
+    <joint name="container_joint" type="fixed">
+        <parent link="drawbar_link"/>
+        <child link="container"/>
+        <origin xyz="-1.75 0 0.4" rpy="0 0 0"/>
+        <!-- <axis xyz="0 0 1"/>
+        <limit lower="-1.57" upper="1.57" effort="10" velocity="1"/> -->
+    </joint>
+
+    <link name="container_left_wheel" >
+        <visual>
+            <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+            <geometry>
+                <cylinder length="0.1" radius="0.1"/>
+            </geometry>
+            <material name="red"/>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+            <geometry>
+                <cylinder length="0.1" radius="0.1"/>
+            </geometry>
+        </collision>
+        <inertial>
+            <mass value="0.1"/>
+            <inertia ixx="0.001" ixy="0.0" ixz="0.0" iyy="0.001" iyz="0.0" izz="0.001"/>
+        </inertial>
+    </link>
+
+    <link name="container_right_wheel" >
+        <visual>
+            <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+            <geometry>
+                <cylinder length="0.1" radius="0.1"/>
+            </geometry>
+            <material name="red"/>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+            <geometry>
+                <cylinder length="0.1" radius="0.1"/>
+            </geometry>
+        </collision>
+        <inertial>
+            <mass value="0.1"/>
+            <inertia ixx="0.001" ixy="0.0" ixz="0.0" iyy="0.001" iyz="0.0" izz="0.001"/>
+        </inertial>
+    </link>
+
+
+    <joint name="container_left_wheel_joint" type="continuous">
+        <parent link="container"/>
+        <child link="container_left_wheel"/>
+        <origin xyz="-1.0 0.5 -0.5" rpy="0 0 0"/>
+        <axis xyz="0 1 0"/>
+    </joint>
+
+    <joint name="container_right_wheel_joint" type="continuous">
+        <parent link="container"/>
+        <child link="container_right_wheel"/>
+        <origin xyz="-1.0 -0.5 -0.5" rpy="0 0 0"/>
+        <axis xyz="0 1 0"/>
+    </joint>
+
+    <link name="container_caster_wheel">
+        <visual>
+            <geometry>
+                <sphere radius="0.1"/>
+            </geometry>
+            <material name="red"/>
+        </visual>
+        <collision>
+            <geometry>
+                <sphere radius="0.1"/>
+            </geometry>
+        </collision>
+        <inertial>
+            <mass value="0.05"/>
+            <inertia ixx="0.0005" ixy="0.0" ixz="0.0" iyy="0.0005" iyz="0.0" izz="0.0005"/>
+        </inertial>
+    </link>
+
+    <joint name="container_caster_wheel_joint" type="fixed">
+        <parent link="container"/>
+        <child link="container_caster_wheel"/>
+        <origin xyz="1.0 0 -0.5" rpy="0 1.571 0"/>
+    </joint>
+
+
+    <link name="trailer_link">
+        <visual>
+            <geometry>
+                <box size="0.5 0.1 0.1"/>
+            </geometry>
+            <material name="red">
+                <color rgba="1 0 0 1"/>
+            </material>
+        </visual>
+        <collision>
+            <geometry>
+                <box size="0.5 0.1 0.1"/>
+            </geometry>
+        </collision>
+        <inertial>
+            <mass value="1.0"/>
+            <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
+        </inertial>
+    </link>
+
+
+    <joint name="trailer_joint" type="fixed">
+        <parent link="base_link"/>
+        <child link="trailer_link"/>
+        <origin xyz="-0.5 0 0" rpy="0 0 0"/>
+        <!-- <axis xyz="0 0 1"/>
+        <limit lower="-1.57" upper="1.57" effort="10" velocity="1"/> -->
+    </joint>
+
+    <!-- Gazebo -->
+
+    <gazebo reference="left_wheel">
+        <mu1>10.0</mu1>
+        <mu2>10.0</mu2>
+        <kp>1000000.0</kp>
+        <kd>1.0</kd>
+    </gazebo>
+
+    <gazebo reference="right_wheel">
+        <mu1>10.0</mu1>
+        <mu2>10.0</mu2>
+        <kp>1000000.0</kp>
+        <kd>1.0</kd>
+    </gazebo>
+
+    <gazebo reference="caster_wheel">
+        <mu1>0.01</mu1>
+        <mu2>0.01</mu2>
+        <kp>100000.0</kp>
+        <kd>1.0</kd>
+    </gazebo>
+
+    <!-- Caster -->
+
+    <gazebo reference="container_left_wheel">
+        <mu1>10.0</mu1>
+        <mu2>10.0</mu2>
+        <kp>1000000.0</kp>
+        <kd>1.0</kd>
+    </gazebo>
+
+    <gazebo reference="container_right_wheel">
+        <mu1>10.0</mu1>
+        <mu2>10.0</mu2>
+        <kp>1000000.0</kp>
+        <kd>1.0</kd>
+    </gazebo>
+
+    <gazebo reference="container_caster_wheel">
+        <mu1>0.01</mu1>
+        <mu2>0.01</mu2>
+        <kp>100000.0</kp>
+        <kd>1.0</kd>
+    </gazebo>
+
+    <gazebo>
+        <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
+            <left_joint>left_wheel_joint</left_joint>
+            <right_joint>right_wheel_joint</right_joint>
+            <wheel_separation>0.5</wheel_separation>
+            <wheel_radius>0.1</wheel_radius>
+            <topic>cmd_vel</topic>
+            <odom_topic>odom</odom_topic>
+            <tf_topic>tf</tf_topic>
+            <frame_id>odom</frame_id>
+            <child_frame_id>base_footprint</child_frame_id>
+            <odom_publish_frequency>50</odom_publish_frequency>
+        </plugin>
+    </gazebo>
+
+</robot>
