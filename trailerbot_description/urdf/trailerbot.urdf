@@ -19,8 +19,8 @@
             </geometry>
         </collision>
         <inertial>
-            <mass value="1.0"/>
-            <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
+            <mass value="10.0"/>
+            <inertia ixx="0.104" ixy="0.0" ixz="0.0" iyy="0.217" iyz="0.0" izz="0.260"/>
         </inertial>
     </link>
 
@@ -193,7 +193,7 @@
         </collision>
         <inertial>
             <mass value="20.0"/>
-            <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
+            <inertia ixx="3.333" ixy="0.0" ixz="0.0" iyy="10.833" iyz="0.0" izz="10.833"/>
         </inertial>
     </link>
 
@@ -384,6 +384,8 @@
             <joint_name>pivot_marker_drawbar_joint</joint_name>
             <joint_name>left_wheel_joint</joint_name>
             <joint_name>right_wheel_joint</joint_name>
+            <joint_name>container_left_wheel_joint</joint_name>
+            <joint_name>container_right_wheel_joint</joint_name>
         </plugin>
     </gazebo>
 
