@@ -1,14 +1,35 @@
 #!/usr/bin/env python3
 """
-TurtleBot MPC Node — trailer-aware version.
+TurtleBot MPC Node — reverse trailer parking.
 
-Subscribes to /joint_states to read the live hitch angle
-(pivot_marker_drawbar_joint) and feeds it into the MPC at every control step.
+Flow
+────
+1. User publishes a goal_pos (PoseStamped) in RViz on topic /goal_pos.
+2. Node plans a REVERSE path from current odometry to the goal using
+   the trailer-aware Hybrid A*.
+3. MPC tracks the path waypoint-by-waypoint in reverse, using the live
+   hitch angle from /joint_states at every control step.
+4. Robot stops when the final waypoint is reached (trailer parked).
+
+Topics
+──────
+  Sub  /odom              nav_msgs/Odometry
+  Sub  /joint_states      sensor_msgs/JointState
+  Sub  /goal_pos          geometry_msgs/PoseStamped     ← set in RViz
+  Sub  /start_pos         geometry_msgs/PoseWithCovarianceStamped  (optional)
+  Pub  /cmd_vel           geometry_msgs/Twist
+  Pub  /trajectory        nav_msgs/Path   (A* path)
+  Pub  /mpc_trajectory    nav_msgs/Path   (MPC predicted horizon)
 """
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist, Quaternion
+from geometry_msgs.msg import (
+    PoseStamped,
+    PoseWithCovarianceStamped,
+    Twist,
+    Quaternion,
+)
 from nav_msgs.msg import Odometry, Path
 from sensor_msgs.msg import JointState
 import numpy as np
@@ -18,7 +39,11 @@ from hybrid_a_star_planner.mpc import MPC
 from hybrid_a_star_planner.a_star import AStar, Pos
 
 
-HITCH_JOINT_NAME = "pivot_marker_drawbar_joint"
+HITCH_JOINT = "pivot_marker_drawbar_joint"
+
+# Waypoint acceptance radius (metres) and heading tolerance (rad)
+WP_DIST_TOL  = 0.20
+WP_HEAD_TOL  = 0.15
 
 
 def quaternion_to_yaw(q: Quaternion) -> float:
@@ -27,186 +52,189 @@ def quaternion_to_yaw(q: Quaternion) -> float:
     return float(np.arctan2(siny_cosp, cosy_cosp))
 
 
-class TurtleBotMPCNode(Node, AStar):
-    def __init__(self, mpc_controller: MPC):
-        Node.__init__(self, "turtlebot_mpc_node")
-        AStar.__init__(self)
-        self.mpc = mpc_controller
+def _make_pose_stamped(x: float, y: float, theta: float) -> PoseStamped:
+    ps = PoseStamped()
+    ps.header.frame_id = "base_footprint"
+    ps.pose.position.x = x
+    ps.pose.position.y = y
+    ps.pose.orientation.z = float(np.sin(theta / 2.0))
+    ps.pose.orientation.w = float(np.cos(theta / 2.0))
+    return ps
 
-        qos_best_effort = QoSProfile(
+
+class TrailerParkingNode(Node):
+    def __init__(self, mpc_controller: MPC, planner: AStar):
+        super().__init__("trailer_parking_node")
+        self.mpc     = mpc_controller
+        self.planner = planner
+
+        qos_be = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=10,
         )
 
         # ── Publishers ────────────────────────────────────────────────
-        # trailerbot uses plain Twist on /cmd_vel (DiffDrive plugin)
-        self.cmd_pub      = self.create_publisher(Twist,  "/cmd_vel",       10)
-        self.path_pub     = self.create_publisher(Path,   "trajectory",     10)
-        self.mpc_path_pub = self.create_publisher(Path,   "mpc_trajectory", 10)
+        self.cmd_pub      = self.create_publisher(Twist,       "/cmd_vel",        10)
+        self.path_pub     = self.create_publisher(Path,        "/trajectory",     10)
+        self.mpc_path_pub = self.create_publisher(Path,        "/mpc_trajectory", 10)
 
         # ── Subscribers ───────────────────────────────────────────────
-        self.odom_sub = self.create_subscription(
-            Odometry, "/odom", self._odom_cb, qos_best_effort
-        )
-        self.joint_sub = self.create_subscription(
-            JointState, "/joint_states", self._joint_states_cb, 10
-        )
-        self.start_pos_sub = self.create_subscription(
-            PoseWithCovarianceStamped, "start_pos", self._start_pos_cb, 1
-        )
-        self.goal_pos_sub = self.create_subscription(
-            PoseStamped, "goal_pos", self._goal_pos_cb, 1
+        self.create_subscription(Odometry,   "/odom",         self._odom_cb,   qos_be)
+        self.create_subscription(JointState, "/joint_states", self._joint_cb,  10)
+        self.create_subscription(PoseStamped,"/goal_pos",     self._goal_cb,   1)
+        self.create_subscription(
+            PoseWithCovarianceStamped, "/start_pos", self._start_cb, 1
         )
 
         # ── State ─────────────────────────────────────────────────────
         self.current_pose: list[float] | None = None   # [x, y, theta]
-        self.goal_pose:    list[float] | None = None   # [x, y, theta]
-        self.hitch_angle:  float               = 0.0   # phi from joint_states
+        self.hitch_angle: float                = 0.0
 
-        self.path        = Path()
-        self.path.header.frame_id = "odom"
-        self.mpc_path    = Path()
-        self.mpc_path.header.frame_id = "odom"
-
-        self.traj:        list[Pos] = []
-        self.path_index:  int       = 0
-        self.start_pos    = Pos.default()
-        self.goal_pos     = Pos.default()
+        self.traj:       list[Pos] = []
+        self.wp_index:   int       = 0
+        self.goal_wp:    list[float] | None = None     # current waypoint [x,y,θ]
+        self.parking:    bool = False                  # True while following path
 
         # ── Control timer ─────────────────────────────────────────────
         self.timer = self.create_timer(self.mpc.dt, self._control_loop)
-        self.get_logger().info("TurtleBot MPC Node (trailer-aware) initialised.")
+        self.get_logger().info("Trailer Parking Node ready.  "
+                               "Publish a PoseStamped to /goal_pos to start.")
 
     # ------------------------------------------------------------------
     # Callbacks
     # ------------------------------------------------------------------
 
     def _odom_cb(self, msg: Odometry):
-        pos = msg.pose.pose.position
-        q   = msg.pose.pose.orientation
-        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
-        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-        yaw = np.arctan2(siny_cosp, cosy_cosp)
-        self.current_pose = [pos.x, pos.y, float(yaw)]
+        p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        siny = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        self.current_pose = [p.x, p.y, float(np.arctan2(siny, cosy))]
 
-    def _joint_states_cb(self, msg: JointState):
-        """Extract hitch angle and push it into the MPC."""
-        if HITCH_JOINT_NAME in msg.name:
-            idx = msg.name.index(HITCH_JOINT_NAME)
+    def _joint_cb(self, msg: JointState):
+        if HITCH_JOINT in msg.name:
+            idx = msg.name.index(HITCH_JOINT)
             self.hitch_angle = float(msg.position[idx])
             self.mpc.update_hitch_angle(self.hitch_angle)
 
-    def _start_pos_cb(self, msg: PoseWithCovarianceStamped):
-        self.start_pos.x     = msg.pose.pose.position.x
-        self.start_pos.y     = msg.pose.pose.position.y
-        self.start_pos.theta = quaternion_to_yaw(msg.pose.pose.orientation)
+    def _start_cb(self, msg: PoseWithCovarianceStamped):
+        # Manual override of start position (optional)
+        x     = msg.pose.pose.position.x
+        y     = msg.pose.pose.position.y
+        theta = quaternion_to_yaw(msg.pose.pose.orientation)
+        self.current_pose = [x, y, theta]
+        self.get_logger().info(f"Start override: ({x:.2f}, {y:.2f}, {np.degrees(theta):.1f}°)")
+
+    def _goal_cb(self, msg: PoseStamped):
+        if self.current_pose is None:
+            self.get_logger().warn("No odometry yet — ignoring goal.")
+            return
+
+        gx    = msg.pose.position.x
+        gy    = msg.pose.position.y
+        gth   = quaternion_to_yaw(msg.pose.orientation)
         self.get_logger().info(
-            f"Start set: x={self.start_pos.x:.2f}  y={self.start_pos.y:.2f}"
-            f"  θ={self.start_pos.theta:.2f}"
+            f"Goal received: ({gx:.2f}, {gy:.2f}, {np.degrees(gth):.1f}°)"
         )
 
-    def _goal_pos_cb(self, msg: PoseStamped):
-        self.goal_pos.x     = msg.pose.position.x
-        self.goal_pos.y     = msg.pose.position.y
-        self.goal_pos.theta = quaternion_to_yaw(msg.pose.orientation)
-        self.get_logger().info(
-            f"Goal set: x={self.goal_pos.x:.2f}  y={self.goal_pos.y:.2f}"
-            f"  θ={self.goal_pos.theta:.2f}"
-        )
+        start = Pos(x=self.current_pose[0],
+                    y=self.current_pose[1],
+                    theta=self.current_pose[2])
+        goal  = Pos(x=gx, y=gy, theta=gth)
 
-        # Re-plan from current odometry position (or start_pos if not yet moving)
-        plan_start = self.start_pos
-        if self.current_pose is not None:
-            plan_start = Pos(
-                x=self.current_pose[0],
-                y=self.current_pose[1],
-                theta=self.current_pose[2],
-            )
+        self.get_logger().info("Planning reverse path …")
+        path = self.planner.plan(start, goal)
 
-        self.traj = self.plan(plan_start, self.goal_pos)
-        self.path_index = 0
+        if not path:
+            self.get_logger().error("Planner returned an empty path — aborting.")
+            return
 
-        if self.traj:
-            self.get_logger().info(f"Path planned: {len(self.traj)} waypoints.")
-            self.path.poses.clear()  # type: ignore[attr-defined]
-            for pos in self.traj:
-                ps = PoseStamped()
-                ps.header.frame_id = "odom"
-                ps.pose.position.x = pos.x
-                ps.pose.position.y = pos.y
-                qz = np.sin(pos.theta / 2.0)
-                qw = np.cos(pos.theta / 2.0)
-                ps.pose.orientation.z = float(qz)
-                ps.pose.orientation.w = float(qw)
-                self.path.poses.append(ps)  # type: ignore[attr-defined]
-            self.path_pub.publish(self.path)
-            self.goal_pose = [self.traj[0].x, self.traj[0].y, self.traj[0].theta]
-        else:
-            self.get_logger().warn("A* failed to plan a path.")
+        self.traj     = path
+        self.wp_index = 0
+        self.goal_wp  = [path[0].x, path[0].y, path[0].theta]
+        self.parking  = True
+        self.mpc.u_prev = None   # reset warm-start for new manoeuvre
+
+        self.get_logger().info(f"Path planned: {len(path)} waypoints.  Starting reverse park.")
+
+        # Publish full A* path for RViz
+        ros_path = Path()
+        ros_path.header.frame_id = "base_footprint"
+        for wp in path:
+            ros_path.poses.append(_make_pose_stamped(wp.x, wp.y, wp.theta))
+        self.path_pub.publish(ros_path)
 
     # ------------------------------------------------------------------
     # Control loop
     # ------------------------------------------------------------------
 
     def _control_loop(self):
-        if self.current_pose is None or self.goal_pose is None:
+        if not self.parking or self.current_pose is None or self.goal_wp is None:
             return
 
-        # ── Waypoint switching ────────────────────────────────────────
-        dx = self.goal_pose[0] - self.current_pose[0]
-        dy = self.goal_pose[1] - self.current_pose[1]
-        dist = np.hypot(dx, dy)
+        cx, cy, cth = self.current_pose
+        gx, gy, gth = self.goal_wp
 
-        if dist < 0.1:
-            if self.path_index >= len(self.traj) - 1:
-                self.get_logger().info("Final goal reached — stopping.")
+        dist     = np.hypot(gx - cx, gy - cy)
+        head_err = abs(np.arctan2(np.sin(gth - cth), np.cos(gth - cth)))
+
+        # ── Waypoint switch ───────────────────────────────────────────
+        if dist < WP_DIST_TOL and head_err < WP_HEAD_TOL:
+            if self.wp_index >= len(self.traj) - 1:
+                self.get_logger().info(
+                    f"Trailer parked!  Final hitch angle: "
+                    f"{np.degrees(self.hitch_angle):.1f}°"
+                )
                 self._stop()
                 return
-            self.path_index += 1
-            wp = self.traj[self.path_index]
-            self.goal_pose = [wp.x, wp.y, wp.theta]
+            self.wp_index += 1
+            wp = self.traj[self.wp_index]
+            self.goal_wp = [wp.x, wp.y, wp.theta]
             self.get_logger().info(
-                f"Waypoint {self.path_index}/{len(self.traj)-1}  "
-                f"hitch={np.degrees(self.hitch_angle):.1f}°"
+                f"Waypoint {self.wp_index}/{len(self.traj)-1}  "
+                f"dist={dist:.2f} m  φ={np.degrees(self.hitch_angle):.1f}°"
             )
 
         # ── MPC solve ────────────────────────────────────────────────
-        optimal_controls, predicted_traj = self.mpc.solve_control(
-            self.current_pose, self.goal_pose
-        )
+        try:
+            optimal_controls, predicted_traj = self.mpc.solve_control(
+                self.current_pose, self.goal_wp
+            )
+        except Exception as e:
+            self.get_logger().error(f"MPC solve failed: {e}")
+            self._stop()
+            return
 
         v, omega = optimal_controls[0]
-        self.get_logger().info(
-            f"pose=({self.current_pose[0]:.2f},{self.current_pose[1]:.2f},"
-            f"{np.degrees(self.current_pose[2]):.1f}°)  "
-            f"hitch={np.degrees(self.hitch_angle):.1f}°  "
+
+        # Safety: hard-clamp to reverse only
+        v = float(np.clip(v, self.mpc.v_min, 0.0))
+
+        self.get_logger().debug(
+            f"pose=({cx:.2f},{cy:.2f},{np.degrees(cth):.1f}°)  "
+            f"wp=({gx:.2f},{gy:.2f},{np.degrees(gth):.1f}°)  "
+            f"dist={dist:.2f}  φ={np.degrees(self.hitch_angle):.1f}°  "
             f"v={v:.3f}  ω={omega:.3f}"
         )
 
         # ── Publish command ───────────────────────────────────────────
         cmd = Twist()
-        cmd.linear.x  = float(v)
+        cmd.linear.x  = v
         cmd.angular.z = float(omega)
         self.cmd_pub.publish(cmd)
 
-        # ── Publish MPC predicted path for RViz ──────────────────────
-        self.mpc_path.poses.clear()  # type: ignore[attr-defined]
+        # ── Publish MPC horizon for RViz ──────────────────────────────
+        mpc_path = Path()
+        mpc_path.header.frame_id = "base_footprint"
         for pos in predicted_traj:
-            ps = PoseStamped()
-            ps.header.frame_id = "odom"
-            ps.pose.position.x = pos.x
-            ps.pose.position.y = pos.y
-            qz = np.sin(pos.theta / 2.0)
-            qw = np.cos(pos.theta / 2.0)
-            ps.pose.orientation.z = float(qz)
-            ps.pose.orientation.w = float(qw)
-            self.mpc_path.poses.append(ps)  # type: ignore[attr-defined]
-        self.mpc_path_pub.publish(self.mpc_path)
+            mpc_path.poses.append(_make_pose_stamped(pos.x, pos.y, pos.theta))
+        self.mpc_path_pub.publish(mpc_path)
 
     def _stop(self):
         self.cmd_pub.publish(Twist())
-        self.goal_pose = None
+        self.parking = False
+        self.goal_wp = None
 
 
 # ---------------------------------------------------------------------------
@@ -216,16 +244,26 @@ class TurtleBotMPCNode(Node, AStar):
 def main():
     rclpy.init()
 
-    my_mpc = MPC(dt=0.1, horizon=20)
-    my_mpc.set_physical_constraints(v_max=0.25, v_min=-0.25, omega_max=0.5)
-    my_mpc.set_weights(
-        position_weight=1.0,
-        heading_weight=0.5,
-        control_weight=0.1,
-        phi_weight=3.0,      # penalise hitch angle heavily — keeps trailer straight
+    # MPC — reverse-only, trailer-aware
+    mpc = MPC(dt=0.1, horizon=15)
+    mpc.set_physical_constraints(
+        v_max     =  0.0,    # no forward motion during parking
+        v_min     = -0.20,   # slow reverse
+        omega_max =  0.45,
+    )
+    mpc.set_weights(
+        position_weight = 1.0,
+        heading_weight  = 0.8,
+        control_weight  = 0.1,
+        phi_weight      = 4.0,   # strong hitch straightening
     )
 
-    node = TurtleBotMPCNode(my_mpc)
+    # Planner
+    planner = AStar()
+    # Optionally add obstacles:
+    # planner.set_obstacles([(cx, cy, half_x, half_y), ...])
+
+    node = TrailerParkingNode(mpc, planner)
     rclpy.spin(node)
     rclpy.shutdown()
 
