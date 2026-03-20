@@ -169,7 +169,7 @@
     </joint>
 
 
-    <joint name="pivot_marker_drawbar_joint" type="continuous">
+    <joint name="pivot_marker_drawbar_joint" type="revolute">
         <parent link="pivot_marker_link"/>
         <child link="drawbar_link"/>
         <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -192,7 +192,7 @@
             </geometry>
         </collision>
         <inertial>
-            <mass value="20.0"/>
+            <mass value="10.0"/>
             <inertia ixx="3.333" ixy="0.0" ixz="0.0" iyy="10.833" iyz="0.0" izz="10.833"/>
         </inertial>
     </link>
@@ -354,9 +354,9 @@
     </gazebo>
 
     <gazebo reference="container_caster_wheel">
-        <mu1>0.01</mu1>
-        <mu2>0.01</mu2>
-        <kp>100000.0</kp>
+        <mu1>0.0</mu1>
+        <mu2>0.0</mu2>
+        <kp>1000000.0</kp>
         <kd>1.0</kd>
     </gazebo>
 
