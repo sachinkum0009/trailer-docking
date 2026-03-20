@@ -2,6 +2,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist, Quaternion
 from nav_msgs.msg import Odometry, Path
+from sensor_msgs.msg import JointState
 import numpy as np
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from hybrid_a_star_planner.forward_mpc import MPC
@@ -15,6 +16,10 @@ def quaternion_to_yaw(q: Quaternion) -> float:
     return np.arctan2(siny_cosp, cosy_cosp)
 
 
+def wrap_angle(angle: float) -> float:
+    return float(np.arctan2(np.sin(angle), np.cos(angle)))
+
+
 class TrailerBotMPCNode(Node, AStar):
     def __init__(self, mpc_controller: MPC):
         Node.__init__(self, "trailerbot_mpc_node")
@@ -26,9 +31,11 @@ class TrailerBotMPCNode(Node, AStar):
             depth=10,
         )
         self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        # Subscribers
         self.odom_sub = self.create_subscription(
             Odometry, "/odom", self.odom_callback, qos_profile
         )
+        self.create_subscription(JointState, "/joint_states", self._joint_cb, 10)
         self.path_pub = self.create_publisher(Path, "trajectory", 10)
         self.mpc_path_pub = self.create_publisher(Path, "mpc_trajectory", 10)
 
@@ -45,17 +52,52 @@ class TrailerBotMPCNode(Node, AStar):
         self.mpc_path = Path()
         self.mpc_path.header.frame_id = "odom"
 
-        self.path_index = 0
+        self.path_index = 1
         self.traj: list[Pos] = []
 
         self.current_pose = None
-        self.goal_pose = None  # [0.0, 0.0, 0.0]  # Your target
+        self.goal_pose = None  # [x, y, theta, phi]
+        self._phi = 0.0  # Hitch angle
 
         # Run control loop at the same dt as your MPC
         self.timer = self.create_timer(self.mpc.dt, self.control_loop)
         self.start_pos = Pos.default()
         self.goal_pos = Pos.default()
         self.get_logger().info("TurtleBot MPC Node initialized.")
+
+    def _update_goal_from_path(self):
+        if not self.traj or self.current_pose is None:
+            return
+
+        cx, cy = self.current_pose[0], self.current_pose[1]
+        start_idx = max(0, min(self.path_index, len(self.traj) - 1))
+
+        nearest_idx = start_idx
+        nearest_d2 = float("inf")
+        for i in range(start_idx, len(self.traj)):
+            dx = self.traj[i].x - cx
+            dy = self.traj[i].y - cy
+            d2 = dx * dx + dy * dy
+            if d2 < nearest_d2:
+                nearest_d2 = d2
+                nearest_idx = i
+
+        lookahead = 3
+        target_idx = min(nearest_idx + lookahead, len(self.traj) - 1)
+        self.path_index = target_idx
+        self.goal_pose = [
+            self.traj[target_idx].x,
+            self.traj[target_idx].y,
+            self.traj[target_idx].theta,
+            self._target_phi_for_index(target_idx),
+        ]
+
+    def _target_phi_for_index(self, index: int) -> float:
+        # Keep articulation objective soft for intermediate waypoints;
+        # enforce straight trailer at final docking pose.
+        if index >= len(self.traj) - 1:
+            return 0.0
+        return float(self._phi)
 
     def odom_callback(self, msg: Odometry):
         # Change to info so it shows up by default
@@ -69,8 +111,14 @@ class TrailerBotMPCNode(Node, AStar):
         cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
         yaw = np.arctan2(siny_cosp, cosy_cosp)
 
-        self.current_pose = [pos.x, pos.y, yaw]
+        self.current_pose = [pos.x, pos.y, yaw, self._phi]
         # self.get_logger().info(f"Current pose: {self.current_pose}")
+
+    def _joint_cb(self, msg: JointState):
+        if "pivot_marker_drawbar_joint" in msg.name:
+            idx = list(msg.name).index("pivot_marker_drawbar_joint")
+            self._phi = msg.position[idx]
+            # self.get_logger().info(f"Updated hitch angle: {self.hitch_angle:.2f}")
 
     def start_pos_cb(self, msg: PoseWithCovarianceStamped):
         self.start_pos.x = msg.pose.pose.position.x
@@ -84,11 +132,21 @@ class TrailerBotMPCNode(Node, AStar):
         self.goal_pos.x = msg.pose.position.x
         self.goal_pos.y = msg.pose.position.y
         self.goal_pos.theta = quaternion_to_yaw(msg.pose.orientation)
+        self.goal_pos.phi = 0.0
         self.get_logger().info(
             f"Received goal: x={self.goal_pos.x:.2f}, y={self.goal_pos.y:.2f}, theta={self.goal_pos.theta:.2f}"
         )
 
-        self.traj = self.plan(self.start_pos, self.goal_pos)
+        start_for_plan = self.start_pos
+        if self.current_pose is not None:
+            start_for_plan = Pos(
+                x=self.current_pose[0],
+                y=self.current_pose[1],
+                theta=self.current_pose[2],
+                phi=self._phi,
+            )
+
+        self.traj = self.plan(start_for_plan, self.goal_pos)
         if self.traj:
             self.get_logger().info(f"Planned path with {len(self.traj)} waypoints.")
             self.path.poses.clear()  # type: ignore
@@ -104,7 +162,13 @@ class TrailerBotMPCNode(Node, AStar):
                 pose_stamped.pose.orientation.w = qw
                 self.path.poses.append(pose_stamped)  # type: ignore
             self.path_pub.publish(self.path)
-            self.goal_pose = [self.traj[0].x, self.traj[0].y, self.traj[0].theta]
+            self.path_index = 1 if len(self.traj) > 1 else 0
+            self.goal_pose = [
+                self.traj[self.path_index].x,
+                self.traj[self.path_index].y,
+                self.traj[self.path_index].theta,
+                self._target_phi_for_index(self.path_index),
+            ]
         else:
             self.get_logger().warn("Failed to plan path with A*.")
 
@@ -115,11 +179,14 @@ class TrailerBotMPCNode(Node, AStar):
             )
             return
 
+        # Refresh target from trajectory using nearest + lookahead indexing.
+        self._update_goal_from_path()
+
         # check if goal is reached
         dx = self.goal_pose[0] - self.current_pose[0]
         dy = self.goal_pose[1] - self.current_pose[1]
         distance_to_goal = np.hypot(dx, dy)
-        if distance_to_goal < 0.1:
+        if distance_to_goal < 0.35:
             self.get_logger().info("Goal reached!")
             # exit(0)
             # return
@@ -129,7 +196,6 @@ class TrailerBotMPCNode(Node, AStar):
                 cmd.linear.x = 0.0
                 cmd.angular.z = 0.0
                 self.cmd_pub.publish(cmd)
-                exit(0)
                 return
             self.path_index += 1
             if self.path_index < len(self.path.poses):
@@ -137,6 +203,7 @@ class TrailerBotMPCNode(Node, AStar):
                     self.traj[self.path_index].x,
                     self.traj[self.path_index].y,
                     self.traj[self.path_index].theta,
+                    self._target_phi_for_index(self.path_index),
                 ]
 
         # 1. Solve MPC for the current state
@@ -148,10 +215,24 @@ class TrailerBotMPCNode(Node, AStar):
 
         # 2. Extract the first control command (v, omega)
         v, omega = optimal_controls[0]
+
+        # If heading error is large, slow down linear speed so the robot turns first.
+        heading_error = wrap_angle(self.goal_pose[2] - self.current_pose[2])
+        if abs(heading_error) > 0.7:
+            v = float(np.clip(v, 0.03, 0.10))
+
+        # Avoid reverse oscillation during early/mid path tracking.
+        if self.path_index < max(1, len(self.traj) - 6):
+            v = float(max(v, 0.0))
+
+        if distance_to_goal < 0.6:
+            omega = float(np.clip(omega, -0.25, 0.25))
+
         self.get_logger().info(f"Optimal control: v={v:.2f}, omega={omega:.2f}")
 
         # 3. Publish to TurtleBot
         self._publish_cmd(v, omega)
+        self.mpc.set_last_applied_control(float(v), float(omega))
 
     def _publish_cmd(self, v: float, omega: float):
         cmd = Twist()
@@ -163,9 +244,11 @@ class TrailerBotMPCNode(Node, AStar):
 def main():
     rclpy.init()
     # Initialize your MPC class from your code
-    my_mpc = MPC(dt=0.1, horizon=40)
+    my_mpc = MPC(dt=0.1, horizon=18)
     my_mpc.set_physical_constraints(v_max=0.25, v_min=-0.25, omega_max=0.5)
-    my_mpc.set_weights(position_weight=2.0, heading_weight=0.5, control_weight=0.1)
+    my_mpc.set_weights(
+        position_weight=1.0, heading_weight=0.5, control_weight=0.5, phi_weight=0.1
+    )
     node = TrailerBotMPCNode(my_mpc)
     rclpy.spin(node)
     rclpy.shutdown()

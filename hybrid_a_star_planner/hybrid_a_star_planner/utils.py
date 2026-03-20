@@ -6,6 +6,7 @@ class Pos:
     x: float
     y: float
     theta: float
+    phi: float = 0.0
 
     @staticmethod
     def default() -> "Pos":

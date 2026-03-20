@@ -31,7 +31,6 @@ obstacle boxes.
 
 from __future__ import annotations
 
-import heapq
 import math
 from dataclasses import dataclass, field
 from typing import Optional
@@ -376,26 +375,21 @@ class AStar:
     #     return self.trajectory
 
     def plan(self, start_pos: Pos, goal_pos: Pos) -> list[Pos]:
-        # interpolate a straight-line path
-
-        # self.trajectory.clear()
-        # sx, sy, stheta = start_pos.x, start_pos.y, start_pos.theta
-        # gx, gy, gtheta = goal_pos.x,  goal_pos.y,  goal_pos.theta
-        # dist = math.hypot(gx - sx, gy - sy)
-        # steps = max(2, int(dist / XY_RESO))
-        # for i in range(steps + 1):
-        #     t = i / steps
-        #     x = sx + t * (gx - sx)
-        #     y = sy + t * (gy - sy)
-        #     theta = stheta + t * (gtheta - stheta)
-        #     self.trajectory.append(Pos(x=x, y=y, theta=theta))
-        # return self.trajectory
-
         self.trajectory.clear()
-        # use interplate method to generate trajectory with 10 points
-        for i in range(10):
-            x = start_pos.x + (goal_pos.x - start_pos.x) * i / 9
-            y = start_pos.y + (goal_pos.y - start_pos.y) * i / 9
-            theta = start_pos.theta + (goal_pos.theta - start_pos.theta) * i / 9
+
+        sx, sy, stheta = start_pos.x, start_pos.y, start_pos.theta
+        gx, gy, gtheta = goal_pos.x, goal_pos.y, goal_pos.theta
+
+        dist = math.hypot(gx - sx, gy - sy)
+        steps = max(2, int(math.ceil(dist / XY_RESO)))
+
+        # Interpolate heading through the shortest angular distance.
+        dtheta = math.atan2(math.sin(gtheta - stheta), math.cos(gtheta - stheta))
+        for i in range(steps + 1):
+            t = i / steps
+            x = sx + t * (gx - sx)
+            y = sy + t * (gy - sy)
+            theta = stheta + t * dtheta
             self.trajectory.append(Pos(x=x, y=y, theta=theta))
+
         return self.trajectory
