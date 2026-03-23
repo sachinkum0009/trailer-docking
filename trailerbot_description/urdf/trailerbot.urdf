@@ -168,7 +168,7 @@
     <joint name="container_joint" type="fixed">
         <parent link="drawbar_link"/>
         <child link="container"/>
-        <origin xyz="-1.75 0 0.4" rpy="0 0 0"/>
+        <origin xyz="-1.75 0 0.375" rpy="0 0 0"/>
     </joint>
 
     <link name="container_rear_left_wheel">
