@@ -272,6 +272,10 @@ class MPC:
                 cost += diff @ W_delta @ diff
                 if controls[i][0] * controls[i - 1][0] < 0.0:
                     cost += v_flip_cost
+            
+            # --- NEW: Hitch angle penalty to avoid extreme articulation ---
+            if abs(trajectory[i, 3]) > 0.6:  # ~35 degrees
+                cost += 1000.0 * (abs(trajectory[i, 3]) - 0.6)**2
 
         # 3. Final State Cost
         final_error = trajectory[-1] - ref
