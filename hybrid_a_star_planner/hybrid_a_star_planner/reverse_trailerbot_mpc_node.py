@@ -45,7 +45,7 @@ class ReverseTrailerBotMPCNode(Node, AStar):
         self.traj: list[Pos] = []
 
         self.current_pose = None
-        self.goal_pose = (0.0, 0.0, 0.0, 0.0)  # [x, y, theta, phi]
+        self.goal_pose = None # (0.0, 0.0, 0.0, 0.0)  # [x, y, theta, phi]
         self._phi = 0.0  # Hitch angle
 
         # Run control loop at the same dt as your MPC
@@ -118,6 +118,9 @@ class ReverseTrailerBotMPCNode(Node, AStar):
         )
 
     def goal_pos_cb(self, msg: PoseStamped):
+
+        self.goal_pose = [msg.pose.position.x, msg.pose.position.y, 0.0, 0.0]
+        return
         self.goal_pos.x = msg.pose.position.x
         self.goal_pos.y = msg.pose.position.y
         self.goal_pos.theta = quaternion_to_yaw(msg.pose.orientation)
@@ -236,10 +239,10 @@ class ReverseTrailerBotMPCNode(Node, AStar):
 def main():
     rclpy.init()
     # Initialize your MPC class from your code
-    my_mpc = MPC(dt=0.1, horizon=25)
-    my_mpc.set_physical_constraints(v_max=-0.05, v_min=-0.2, omega_max=0.5)
+    my_mpc = MPC(dt=0.1, horizon=30)
+    my_mpc.set_physical_constraints(v_max=-0.05, v_min=-0.25, omega_max=0.2)
     my_mpc.set_weights(
-        position_weight=0.5, heading_weight=1.0, control_weight=0.5, phi_weight=1.0
+        position_weight=0.5, heading_weight=1.0, control_weight=0.5, phi_weight=10.0
     )
     node = ReverseTrailerBotMPCNode(my_mpc)
     rclpy.spin(node)

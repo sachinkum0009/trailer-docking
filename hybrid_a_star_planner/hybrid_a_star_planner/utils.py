@@ -9,6 +9,7 @@ class Pos:
     y: float
     theta: float
     phi: float = 0.0
+    is_reverse: bool = False
 
     @staticmethod
     def default() -> "Pos":

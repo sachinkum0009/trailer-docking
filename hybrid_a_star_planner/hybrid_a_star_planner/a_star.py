@@ -6,24 +6,25 @@ import numpy as np
 from hybrid_a_star_planner.utils import Pos
 
 # ────────────────────────────────────────────────────────────────────────────
-# Planner Constants Tuned for Long Trailer Stability
+# Planner Constants Tuned for Curvy S-Curves
 # ────────────────────────────────────────────────────────────────────────────
-XY_RESO = 0.25           
-THETA_RESO = math.radians(5.0)
-PHI_RESO = math.radians(5.0)
+XY_RESO = 0.20           # Finer resolution for smoother curves
+THETA_RESO = math.radians(3.0)
+PHI_RESO = math.radians(3.0)
 
-# Steering Limits: Reduced from 25 to 20 to force wider "truck-like" turns
-DELTA_VALUES = [math.radians(d) for d in (-20, -10, 0, 10, 20)]
+# More steering options = smoother curves
+DELTA_VALUES = [math.radians(d) for d in (-25, -15, -7, 0, 7, 15, 25)]
 DIRECTIONS = [1, -1] 
-STEP_SIZE = 0.25
+STEP_SIZE = 0.20
 
-# Costs
+# Costs tuned for "Curviness"
 FORWARD_COST = 1.0
-REVERSE_COST = 1.5
-STEER_COST = 1.0            # Increased to prefer straight lines
-STEER_CHANGE_COST = 8.0     # Increased to prevent rapid "weaving"
-DIRECTION_SWITCH_COST = 20.0 # High penalty for the cusp
-JACK_KNIFE_PENALTY_COEFF = 1000.0 # Exponential penalty for tight hitch angles
+REVERSE_COST = 1.2       # Closer to forward cost to allow easier reversing
+STEER_COST = 0.1         # VERY low penalty for steering to encourage curving
+STEER_CHANGE_COST = 2.0  # Reduced to allow fluid steering transitions
+DIRECTION_SWITCH_COST = 15.0 
+CURVE_COST = 0.5         # Penalty for 0 steering to "force" curves if they help
+JACK_KNIFE_PENALTY_COEFF = 1500.0 
 
 @dataclass(order=True)
 class _Node:
@@ -42,7 +43,7 @@ class AStar:
         self.trajectory: List[Pos] = []
         self.obstacles: List[Tuple[float, float, float, float]] = []
         self.L1 = 0.5   
-        self.L2 = 1.75  
+        self.L2 = 2.75  
         self.WB = 0.6   
 
     def set_obstacles(self, obs):
@@ -50,9 +51,8 @@ class AStar:
 
     def _step(self, x: float, y: float, theta: float, phi: float, 
               delta: float, direction: int) -> Tuple[float, float, float, float]:
-        """Sub-stepping kinematics for high-fidelity hitch integration."""
         curr_x, curr_y, curr_t, curr_p = x, y, theta, phi
-        sub_steps = 10 # Increased for better accuracy in tight turns
+        sub_steps = 10 
         dt = (STEP_SIZE / sub_steps)
 
         for _ in range(sub_steps):
@@ -63,27 +63,25 @@ class AStar:
 
             v = dt * direction
             omega = dtheta 
-            # Altafini model
             phi_dot = omega * (1.0 - (self.L1 / self.L2) * math.cos(curr_p)) - (v / self.L2) * math.sin(curr_p)
             curr_p += phi_dot
 
         curr_t = math.atan2(math.sin(curr_t), math.cos(curr_t))
-        # HARD LIMIT: Prevent search from ever entering the danger zone (> 60 degrees)
         curr_p = np.clip(curr_p, -1.05, 1.05) 
 
         return curr_x, curr_y, curr_t, curr_p
 
     def _heuristic(self, x, y, theta, gx, gy, gtheta):
         dist = math.hypot(gx - x, gy - y)
+        # Weight angle more heavily to force the robot to "aim" correctly early on
         angle_err = abs(math.atan2(math.sin(gtheta - theta), math.cos(gtheta - theta)))
-        return dist + 1.0 * angle_err
+        return dist + 1.5 * angle_err
 
     def plan(self, start_pos: Pos, goal_pos: Pos) -> List[Pos]:
         self.trajectory.clear()
         open_heap = []
         closed = {} 
 
-        # Determine if we should start forward or reverse based on goal direction
         start_node = _Node(
             f_cost=self._heuristic(start_pos.x, start_pos.y, start_pos.theta, goal_pos.x, goal_pos.y, goal_pos.theta),
             g_cost=0.0,
@@ -94,7 +92,7 @@ class AStar:
 
         best_node = start_node
         iterations = 0
-        MAX_ITER = 50000
+        MAX_ITER = 60000 # Increased as smoother curves require more exploration
 
         while open_heap and iterations < MAX_ITER:
             iterations += 1
@@ -102,16 +100,15 @@ class AStar:
 
             key = (int(round(node.x / XY_RESO)), 
                    int(round(node.y / XY_RESO)), 
-                   int(round(node.theta / THETA_RESO)) % 72,
+                   int(round(node.theta / THETA_RESO)) % 120,
                    int(round(node.phi / PHI_RESO)))
 
             if key in closed and closed[key] <= node.g_cost:
                 continue
             closed[key] = node.g_cost
 
-            # Goal Check
-            if math.hypot(node.x - goal_pos.x, node.y - goal_pos.y) < 0.35:
-                if abs(math.atan2(math.sin(node.theta - goal_pos.theta), math.cos(node.theta - goal_pos.theta))) < 0.2:
+            if math.hypot(node.x - goal_pos.x, node.y - goal_pos.y) < 0.30:
+                if abs(math.atan2(math.sin(node.theta - goal_pos.theta), math.cos(node.theta - goal_pos.theta))) < 0.15:
                     best_node = node
                     break
 
@@ -126,21 +123,20 @@ class AStar:
                     g_base = STEP_SIZE * (FORWARD_COST if direction > 0 else REVERSE_COST)
                     g_switch = DIRECTION_SWITCH_COST if direction != node.direction else 0.0
                     g_steer_change = abs(delta - node.delta) * STEER_CHANGE_COST
-                    g_steer_val = abs(delta) * STEER_COST
                     
-                    # SOFT JACKKNIFE BUFFER: 
-                    # If phi > 40 degrees (0.7 rad), start penalizing heavily
+                    # Curved preference: penalize delta=0 slightly to encourage "S" shapes
+                    g_curve = CURVE_COST if abs(delta) < 0.01 else 0.0
+                    
                     g_jk = 0.0
-                    if abs(np_) > 0.7:
-                        g_jk = JACK_KNIFE_PENALTY_COEFF * (abs(np_) - 0.7)**2
+                    if abs(np_) > 0.65: # Even tighter buffer for "curvy" safety
+                        g_jk = JACK_KNIFE_PENALTY_COEFF * (abs(np_) - 0.65)**2
 
-                    new_g = node.g_cost + g_base + g_switch + g_steer_change + g_steer_val + g_jk
+                    new_g = node.g_cost + g_base + g_switch + g_steer_change + g_curve + g_jk
                     new_f = new_g + self._heuristic(nx, ny, nt, goal_pos.x, goal_pos.y, goal_pos.theta)
 
                     child = _Node(new_f, new_g, nx, ny, nt, np_, delta, direction, node)
                     heapq.heappush(open_heap, child)
 
-        # Path reconstruction
         path = []
         curr = best_node
         while curr:
@@ -155,5 +151,4 @@ class AStar:
         return self.trajectory
 
     def _in_collision(self, x, y, theta, phi):
-        # Keep your existing SAT-based collision check here
         return False

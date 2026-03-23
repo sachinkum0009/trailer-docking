@@ -78,23 +78,6 @@ class MPC:
     def set_last_applied_control(self, v: float, omega: float):
         self.last_applied_control = np.array([v, omega], dtype=float)
 
-    # def robot_dynamics(
-    #     self, state: NDArray[np.float64], control: NDArray[np.float64]
-    # ) -> NDArray[np.float64]:
-    #     """
-    #     Simple unicycle model dynamics for the robot.
-    #     """
-    #     x, y, theta, phi = state
-    #     v, omega = (
-    #         np.clip(control[0], self.v_min, self.v_max),
-    #         np.clip(control[1], -self.omega_max, self.omega_max),
-    #     )
-    #     x_next = x + v * np.cos(theta) * self.dt
-    #     y_next = y + v * np.sin(theta) * self.dt
-    #     theta_next = theta + omega * self.dt
-    #     phi_next = phi + omega * self.dt
-    #     return np.array([x_next, y_next, theta_next, phi_next])
-
     def robot_dynamics(
         self, state: NDArray[np.float64], control: NDArray[np.float64]
     ) -> NDArray[np.float64]:
@@ -204,34 +187,6 @@ class MPC:
             trajectory[i] = self.robot_dynamics(trajectory[i - 1], controls[i - 1])
         return trajectory
 
-    # def cost_function(
-    #     self,
-    #     controls_flat: NDArray[np.float64],
-    #     current_state: NDArray[np.float64],
-    #     reference: NDArray[np.float64],
-    # ) -> float:
-    #     # Ensure extraction matches the interleaved format
-    #     trajectory = self.predict_trajectory(current_state, controls_flat)
-    #     controls = controls_flat.reshape(self.horizon, 2)
-
-    #     ref = self._to_array(reference)
-    #     cost = 0.0
-
-    #     for i in range(self.horizon):
-    #         error = trajectory[i] - ref
-    #         # Normalize angle to [-pi, pi]
-    #         error[2] = np.arctan2(np.sin(error[2]), np.cos(error[2]))
-    #         error[3] = np.arctan2(np.sin(error[3]), np.cos(error[3]))
-
-    #         # State cost + Control effort cost (state error + control error)
-    #         cost += error @ self.Q @ error + controls[i] @ self.R @ controls[i]
-
-    #     final_error = trajectory[-1] - ref
-    #     final_error[2] = np.arctan2(np.sin(final_error[2]), np.cos(final_error[2]))
-    #     final_error[3] = np.arctan2(np.sin(final_error[3]), np.cos(final_error[3]))
-    #     cost += final_error @ self.Qf @ final_error
-
-    #     return cost
 
     def cost_function(
         self,
