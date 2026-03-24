@@ -35,15 +35,15 @@ from sensor_msgs.msg import JointState
 import numpy as np
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
-from hybrid_a_star_planner.mpc import MPC
+from hybrid_a_star_planner.forward_mpc import MPC as ForwardMPC
 from hybrid_a_star_planner.a_star import AStar, Pos
 
 
 HITCH_JOINT = "pivot_marker_drawbar_joint"
 
 # Waypoint acceptance radius (metres) and heading tolerance (rad)
-WP_DIST_TOL  = 0.20
-WP_HEAD_TOL  = 0.15
+WP_DIST_TOL = 0.20
+WP_HEAD_TOL = 0.15
 
 
 def quaternion_to_yaw(q: Quaternion) -> float:
@@ -62,10 +62,19 @@ def _make_pose_stamped(x: float, y: float, theta: float) -> PoseStamped:
     return ps
 
 
+def _wrap_to_pi(angle: float) -> float:
+    return float(np.arctan2(np.sin(angle), np.cos(angle)))
+
+
+def _reverse_tracking_heading(path_heading: float) -> float:
+    # For reverse motion, robot heading should be opposite the path tangent.
+    return _wrap_to_pi(path_heading + np.pi)
+
+
 class TrailerParkingNode(Node):
-    def __init__(self, mpc_controller: MPC, planner: AStar):
+    def __init__(self, mpc_controller: ForwardMPC, planner: AStar):
         super().__init__("trailer_parking_node")
-        self.mpc     = mpc_controller
+        self.mpc = mpc_controller
         self.planner = planner
 
         qos_be = QoSProfile(
@@ -75,31 +84,31 @@ class TrailerParkingNode(Node):
         )
 
         # ── Publishers ────────────────────────────────────────────────
-        self.cmd_pub      = self.create_publisher(Twist,       "/cmd_vel",        10)
-        self.path_pub     = self.create_publisher(Path,        "/trajectory",     10)
-        self.mpc_path_pub = self.create_publisher(Path,        "/mpc_trajectory", 10)
+        self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
+        self.path_pub = self.create_publisher(Path, "/trajectory", 10)
 
         # ── Subscribers ───────────────────────────────────────────────
-        self.create_subscription(Odometry,   "/odom",         self._odom_cb,   qos_be)
-        self.create_subscription(JointState, "/joint_states", self._joint_cb,  10)
-        self.create_subscription(PoseStamped,"/goal_pos",     self._goal_cb,   1)
+        self.create_subscription(Odometry, "/odom", self._odom_cb, qos_be)
+        self.create_subscription(JointState, "/joint_states", self._joint_cb, 10)
+        self.create_subscription(PoseStamped, "/goal_pos", self._goal_cb, 1)
         self.create_subscription(
             PoseWithCovarianceStamped, "/start_pos", self._start_cb, 1
         )
 
         # ── State ─────────────────────────────────────────────────────
-        self.current_pose: list[float] | None = None   # [x, y, theta]
-        self.hitch_angle: float                = 0.0
+        self.current_pose: list[float] | None = None  # [x, y, theta]
+        self.hitch_angle: float = 0.0
 
-        self.traj:       list[Pos] = []
-        self.wp_index:   int       = 0
-        self.goal_wp:    list[float] | None = None     # current waypoint [x,y,θ]
-        self.parking:    bool = False                  # True while following path
+        self.traj: list[Pos] = []
+        self.wp_index: int = 0
+        self.goal_wp: list[float] | None = None  # current waypoint [x,y,θ]
+        self.parking: bool = False  # True while following path
 
         # ── Control timer ─────────────────────────────────────────────
         self.timer = self.create_timer(self.mpc.dt, self._control_loop)
-        self.get_logger().info("Trailer Parking Node ready.  "
-                               "Publish a PoseStamped to /goal_pos to start.")
+        self.get_logger().info(
+            "Trailer Parking Node ready.  Publish a PoseStamped to /goal_pos to start."
+        )
 
     # ------------------------------------------------------------------
     # Callbacks
@@ -113,35 +122,39 @@ class TrailerParkingNode(Node):
         self.current_pose = [p.x, p.y, float(np.arctan2(siny, cosy))]
 
     def _joint_cb(self, msg: JointState):
-        if HITCH_JOINT in msg.name:
-            idx = msg.name.index(HITCH_JOINT)
-            self.hitch_angle = float(msg.position[idx])
-            self.mpc.update_hitch_angle(self.hitch_angle)
+        # if HITCH_JOINT in msg.name:
+        #     idx = msg.name.index(HITCH_JOINT)
+        #     self.hitch_angle = float(msg.position[idx])
+        #     self.mpc.update_hitch_angle(self.hitch_angle)
+        pass
+
 
     def _start_cb(self, msg: PoseWithCovarianceStamped):
         # Manual override of start position (optional)
-        x     = msg.pose.pose.position.x
-        y     = msg.pose.pose.position.y
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
         theta = quaternion_to_yaw(msg.pose.pose.orientation)
         self.current_pose = [x, y, theta]
-        self.get_logger().info(f"Start override: ({x:.2f}, {y:.2f}, {np.degrees(theta):.1f}°)")
+        self.get_logger().info(
+            f"Start override: ({x:.2f}, {y:.2f}, {np.degrees(theta):.1f}°)"
+        )
 
     def _goal_cb(self, msg: PoseStamped):
         if self.current_pose is None:
             self.get_logger().warn("No odometry yet — ignoring goal.")
             return
 
-        gx    = msg.pose.position.x
-        gy    = msg.pose.position.y
-        gth   = quaternion_to_yaw(msg.pose.orientation)
+        gx = msg.pose.position.x
+        gy = msg.pose.position.y
+        gth = quaternion_to_yaw(msg.pose.orientation)
         self.get_logger().info(
             f"Goal received: ({gx:.2f}, {gy:.2f}, {np.degrees(gth):.1f}°)"
         )
 
-        start = Pos(x=self.current_pose[0],
-                    y=self.current_pose[1],
-                    theta=self.current_pose[2])
-        goal  = Pos(x=gx, y=gy, theta=gth)
+        start = Pos(
+            x=self.current_pose[0], y=self.current_pose[1], theta=self.current_pose[2]
+        )
+        goal = Pos(x=gx, y=gy, theta=gth)
 
         self.get_logger().info("Planning reverse path …")
         path = self.planner.plan(start, goal)
@@ -150,13 +163,27 @@ class TrailerParkingNode(Node):
             self.get_logger().error("Planner returned an empty path — aborting.")
             return
 
-        self.traj     = path
+        self.traj = path
         self.wp_index = 0
-        self.goal_wp  = [path[0].x, path[0].y, path[0].theta]
-        self.parking  = True
-        self.mpc.u_prev = None   # reset warm-start for new manoeuvre
+        if len(path) > 1:
+            self.wp_index = 1
+            self.goal_wp = [
+                path[1].x,
+                path[1].y,
+                _reverse_tracking_heading(path[1].theta),
+            ]
+        else:
+            self.goal_wp = [
+                path[0].x,
+                path[0].y,
+                _reverse_tracking_heading(path[0].theta),
+            ]
+        self.parking = True
+        self.mpc.u_prev = None  # reset warm-start for new manoeuvre
 
-        self.get_logger().info(f"Path planned: {len(path)} waypoints.  Starting reverse park.")
+        self.get_logger().info(
+            f"Path planned: {len(path)} waypoints.  Starting reverse park."
+        )
 
         # Publish full A* path for RViz
         ros_path = Path()
@@ -176,7 +203,7 @@ class TrailerParkingNode(Node):
         cx, cy, cth = self.current_pose
         gx, gy, gth = self.goal_wp
 
-        dist     = np.hypot(gx - cx, gy - cy)
+        dist = np.hypot(gx - cx, gy - cy)
         head_err = abs(np.arctan2(np.sin(gth - cth), np.cos(gth - cth)))
 
         # ── Waypoint switch ───────────────────────────────────────────
@@ -190,17 +217,15 @@ class TrailerParkingNode(Node):
                 return
             self.wp_index += 1
             wp = self.traj[self.wp_index]
-            self.goal_wp = [wp.x, wp.y, wp.theta]
+            self.goal_wp = [wp.x, wp.y, _reverse_tracking_heading(wp.theta)]
             self.get_logger().info(
-                f"Waypoint {self.wp_index}/{len(self.traj)-1}  "
+                f"Waypoint {self.wp_index}/{len(self.traj) - 1}  "
                 f"dist={dist:.2f} m  φ={np.degrees(self.hitch_angle):.1f}°"
             )
 
         # ── MPC solve ────────────────────────────────────────────────
         try:
-            optimal_controls, predicted_traj = self.mpc.solve_control(
-                self.current_pose, self.goal_wp
-            )
+            optimal_controls = self.mpc.solve_control(self.current_pose, self.goal_wp)
         except Exception as e:
             self.get_logger().error(f"MPC solve failed: {e}")
             self._stop()
@@ -220,16 +245,9 @@ class TrailerParkingNode(Node):
 
         # ── Publish command ───────────────────────────────────────────
         cmd = Twist()
-        cmd.linear.x  = v
+        cmd.linear.x = v
         cmd.angular.z = float(omega)
         self.cmd_pub.publish(cmd)
-
-        # ── Publish MPC horizon for RViz ──────────────────────────────
-        mpc_path = Path()
-        mpc_path.header.frame_id = "base_footprint"
-        for pos in predicted_traj:
-            mpc_path.poses.append(_make_pose_stamped(pos.x, pos.y, pos.theta))
-        self.mpc_path_pub.publish(mpc_path)
 
     def _stop(self):
         self.cmd_pub.publish(Twist())
@@ -241,21 +259,22 @@ class TrailerParkingNode(Node):
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def main():
     rclpy.init()
 
     # MPC — reverse-only, trailer-aware
-    mpc = MPC(dt=0.1, horizon=15)
+    mpc = ForwardMPC(dt=0.1, horizon=15)
     mpc.set_physical_constraints(
-        v_max     =  0.0,    # no forward motion during parking
-        v_min     = -0.20,   # slow reverse
-        omega_max =  0.45,
+        v_max=0.0,  # no forward motion during parking
+        v_min=-0.40,  # faster reverse for better response
+        omega_max=0.60,
     )
     mpc.set_weights(
-        position_weight = 1.0,
-        heading_weight  = 0.8,
-        control_weight  = 0.1,
-        phi_weight      = 4.0,   # strong hitch straightening
+        position_weight=2.0,
+        heading_weight=1.0,
+        control_weight=0.05,
+        phi_weight=2.0,  # reduced hitch penalty during transit
     )
 
     # Planner
