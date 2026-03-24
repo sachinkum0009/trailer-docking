@@ -16,14 +16,13 @@ class MPC:
         self.horizon = horizon  # NOTE: For trailer docking, a longer horizon is needed for better performance
 
         self.Q = np.diag([1.0, 1.0, 0.5, 3.0])  # State weights [x, y, theta, phi]
-        
+
         self.R = np.diag([0.1, 0.1])  # Control weights [v, omega]
         self.Qf = self.Q * 10  # Final state weight
 
         self.v_max = 1.0  # max velocity
         self.v_min = -0.5  # min velocity (allowing reverse)
         self.omega_max = 1.0  # max angular velocity
-
 
         self.u_prev: NDArray[np.float64] | None = None
         self.last_applied_control: NDArray[np.float64] | None = None
@@ -46,7 +45,11 @@ class MPC:
             self.bounds.append((-self.omega_max, self.omega_max))
 
     def set_weights(
-        self, position_weight: float, heading_weight: float, control_weight: float, phi_weight: float
+        self,
+        position_weight: float,
+        heading_weight: float,
+        control_weight: float,
+        phi_weight: float,
     ):
         """Update cost function weights."""
         self.Q = np.diag([position_weight, position_weight, heading_weight, phi_weight])
@@ -57,7 +60,9 @@ class MPC:
         if hasattr(state, "x") and hasattr(state, "y") and hasattr(state, "theta"):
             pos_state = cast(Pos, state)
             phi = getattr(pos_state, "phi", 0.0)
-            return np.array([pos_state.x, pos_state.y, pos_state.theta, phi], dtype=float)
+            return np.array(
+                [pos_state.x, pos_state.y, pos_state.theta, phi], dtype=float
+            )
 
         arr = np.asarray(state, dtype=float).flatten()
         if arr.size >= 4:
@@ -95,41 +100,65 @@ class MPC:
     #     phi_next = phi + omega * self.dt
     #     return np.array([x_next, y_next, theta_next, phi_next])
 
-    def robot_dynamics(
-        self, state: NDArray[np.float64], control: NDArray[np.float64]
-    ) -> NDArray[np.float64]:
-        """
-        Kinematic model for a tractor-trailer system where:
-        state = [x, y, theta, phi]
-            theta: robot heading
-            phi: hitch articulation angle (relative)
-        control = [v, omega]
-        """
+    # NOTE: Commented
+    # def robot_dynamics(
+    #     self, state: NDArray[np.float64], control: NDArray[np.float64]
+    # ) -> NDArray[np.float64]:
+    #     """
+    #     Kinematic model for a tractor-trailer system where:
+    #     state = [x, y, theta, phi]
+    #         theta: robot heading
+    #         phi: hitch articulation angle (relative)
+    #     control = [v, omega]
+    #     """
+    #     x, y, theta, phi = state
+
+    #     # Geometry from the URDF model.
+    #     L1 = 0.5   # rear axle -> hitch
+    #     L2 = 2.75  # hitch -> trailer rear axle (container rear wheel center)
+
+    #     # Clip controls to physical limits
+    #     v = np.clip(control[0], self.v_min, self.v_max)
+    #     omega = np.clip(control[1], -self.omega_max, self.omega_max)
+
+    #     # 1. Tractor Dynamics (Standard Unicycle)
+    #     x_next = x + v * np.cos(theta) * self.dt
+    #     y_next = y + v * np.sin(theta) * self.dt
+    #     theta_next = theta + omega * self.dt
+
+    #     # 2. Hitch articulation dynamics (Altafini-style articulation model)
+    #     phi_dot = omega * (1.0 - (L1 / L2) * np.cos(phi)) - (v / L2) * np.sin(phi)
+    #     phi_next = phi + phi_dot * self.dt
+
+    #     return np.array([
+    #         x_next,
+    #         y_next,
+    #         self._wrap_angle(theta_next),
+    #         self._wrap_angle(phi_next),
+    #     ])
+
+    def robot_dynamics(self, state, control):
         x, y, theta, phi = state
+        L1 = 0.5
+        L2 = 2.75
 
-        # Geometry from the URDF model.
-        L1 = 0.5   # rear axle -> hitch
-        L2 = 2.75  # hitch -> trailer rear axle (container rear wheel center)
-
-        # Clip controls to physical limits
         v = np.clip(control[0], self.v_min, self.v_max)
         omega = np.clip(control[1], -self.omega_max, self.omega_max)
 
-        # 1. Tractor Dynamics (Standard Unicycle)
         x_next = x + v * np.cos(theta) * self.dt
         y_next = y + v * np.sin(theta) * self.dt
         theta_next = theta + omega * self.dt
 
-        # 2. Hitch articulation dynamics (Altafini-style articulation model)
-        phi_dot = omega * (1.0 - (L1 / L2) * np.cos(phi)) - (v / L2) * np.sin(phi)
+        # Key fix: sign of omega coupling depends on direction of travel
+        sign = 1.0 if v >= 0.0 else -1.0
+        phi_dot = sign * omega * (1.0 - (L1 / L2) * np.cos(phi)) - (v / L2) * np.sin(
+            phi
+        )
         phi_next = phi + phi_dot * self.dt
 
-        return np.array([
-            x_next,
-            y_next,
-            self._wrap_angle(theta_next),
-            self._wrap_angle(phi_next),
-        ])
+        return np.array(
+            [x_next, y_next, self._wrap_angle(theta_next), self._wrap_angle(phi_next)]
+        )
 
     def solve_control(self, start_pos, goal_pos) -> NDArray[np.float64]:
         """Solve the MPC optimization problem and return both controls and predicted trajectory."""
@@ -148,10 +177,14 @@ class MPC:
             dist = np.hypot(dx, dy)
 
             # Seed with a small goal-directed command to avoid zero-control local lock.
-            v_seed = float(np.clip(0.6 * dist * np.cos(heading_error), self.v_min, self.v_max))
+            v_seed = float(
+                np.clip(0.6 * dist * np.cos(heading_error), self.v_min, self.v_max)
+            )
             if abs(v_seed) < 0.03:
                 v_seed = 0.03 if np.cos(heading_error) >= 0.0 else -0.03
-            omega_seed = float(np.clip(1.2 * heading_error, -self.omega_max, self.omega_max))
+            omega_seed = float(
+                np.clip(1.2 * heading_error, -self.omega_max, self.omega_max)
+            )
             u0 = np.tile(np.array([v_seed, omega_seed], dtype=float), self.horizon)
 
         # 2. Properly interleaved bounds
@@ -182,7 +215,9 @@ class MPC:
         # SLSQP may hit iteration limits but still return a useful solution.
         if not result.success:
             try:
-                if self.cost_function(u0, start_arr, goal_arr) < self.cost_function(result.x, start_arr, goal_arr):
+                if self.cost_function(u0, start_arr, goal_arr) < self.cost_function(
+                    result.x, start_arr, goal_arr
+                ):
                     optimal_controls = u0.reshape(self.horizon, 2)
             except Exception:
                 optimal_controls = u0.reshape(self.horizon, 2)
@@ -243,12 +278,12 @@ class MPC:
         trajectory = self.predict_trajectory(current_state, controls_flat)
         controls = controls_flat.reshape(self.horizon, 2)
         ref = self._to_array(reference)
-        
+
         # Weights for the CHANGE in control [delta_v, delta_omega]
         # A high weight on delta_omega (the second value) specifically kills the "wobble"
-        W_delta = np.diag([0.1, 5.0]) 
+        W_delta = np.diag([0.1, 5.0])
         v_flip_cost = 3.0
-        
+
         cost = 0.0
 
         # 2. Loop through the horizon
@@ -272,11 +307,11 @@ class MPC:
                         cost += v_flip_cost
             else:
                 # Penalize change between predicted steps in the horizon
-                diff = controls[i] - controls[i-1]
+                diff = controls[i] - controls[i - 1]
                 cost += diff @ W_delta @ diff
                 if controls[i][0] * controls[i - 1][0] < 0.0:
                     cost += v_flip_cost
-            
+
             # --- NEW: Hitch angle penalty to avoid extreme articulation ---
             phi_abs = abs(trajectory[i, 3])
             if phi_abs > 0.55:  # Start penalizing articulation earlier.

@@ -5,7 +5,7 @@ from nav_msgs.msg import Odometry, Path
 from sensor_msgs.msg import JointState
 import numpy as np
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from hybrid_a_star_planner.forward_mpc import MPC
+from hybrid_a_star_planner.reverse_mpc import MPC
 from hybrid_a_star_planner.a_star import AStar, Pos
 from hybrid_a_star_planner.utils import quaternion_to_yaw, wrap_angle
 

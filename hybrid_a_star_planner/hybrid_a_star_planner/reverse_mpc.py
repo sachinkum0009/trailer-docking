@@ -77,42 +77,64 @@ class MPC:
 
     def set_last_applied_control(self, v: float, omega: float):
         self.last_applied_control = np.array([v, omega], dtype=float)
-
-    def robot_dynamics(
-        self, state: NDArray[np.float64], control: NDArray[np.float64]
-    ) -> NDArray[np.float64]:
-        """
-        Kinematic model for a tractor-trailer system where:
-        state = [x, y, theta, phi]
-            theta: robot heading
-            phi: hitch articulation angle (relative)
-        control = [v, omega]
-        """
+    
+    def robot_dynamics(self, state, control):
         x, y, theta, phi = state
+        L1 = 0.5
+        L2 = 2.75
 
-        # Geometry from the URDF model.
-        L1 = 0.5   # rear axle -> hitch
-        L2 = 2.75  # hitch -> trailer rear axle (container rear wheel center)
-
-        # Clip controls to physical limits
         v = np.clip(control[0], self.v_min, self.v_max)
         omega = np.clip(control[1], -self.omega_max, self.omega_max)
 
-        # 1. Tractor Dynamics (Standard Unicycle)
         x_next = x + v * np.cos(theta) * self.dt
         y_next = y + v * np.sin(theta) * self.dt
         theta_next = theta + omega * self.dt
 
-        # 2. Hitch articulation dynamics (Altafini-style articulation model)
-        phi_dot = omega * (1.0 - (L1 / L2) * np.cos(phi)) - (v / L2) * np.sin(phi)
+        # Key fix: sign of omega coupling depends on direction of travel
+        sign = 1.0 if v >= 0.0 else -1.0
+        phi_dot = sign * omega * (1.0 - (L1 / L2) * np.cos(phi)) \
+                - (v / L2) * np.sin(phi)
         phi_next = phi + phi_dot * self.dt
 
-        return np.array([
-            x_next,
-            y_next,
-            self._wrap_angle(theta_next),
-            self._wrap_angle(phi_next),
-        ])
+        return np.array([x_next, y_next,
+                        self._wrap_angle(theta_next),
+                        self._wrap_angle(phi_next)])
+
+    # def robot_dynamics(
+    #     self, state: NDArray[np.float64], control: NDArray[np.float64]
+    # ) -> NDArray[np.float64]:
+    #     """
+    #     Kinematic model for a tractor-trailer system where:
+    #     state = [x, y, theta, phi]
+    #         theta: robot heading
+    #         phi: hitch articulation angle (relative)
+    #     control = [v, omega]
+    #     """
+    #     x, y, theta, phi = state
+
+    #     # Geometry from the URDF model.
+    #     L1 = 0.5   # rear axle -> hitch
+    #     L2 = 2.75  # hitch -> trailer rear axle (container rear wheel center)
+
+    #     # Clip controls to physical limits
+    #     v = np.clip(control[0], self.v_min, self.v_max)
+    #     omega = np.clip(control[1], -self.omega_max, self.omega_max)
+
+    #     # 1. Tractor Dynamics (Standard Unicycle)
+    #     x_next = x + v * np.cos(theta) * self.dt
+    #     y_next = y + v * np.sin(theta) * self.dt
+    #     theta_next = theta + omega * self.dt
+
+    #     # 2. Hitch articulation dynamics (Altafini-style articulation model)
+    #     phi_dot = omega * (1.0 - (L1 / L2) * np.cos(phi)) - (v / L2) * np.sin(phi)
+    #     phi_next = phi + phi_dot * self.dt
+
+    #     return np.array([
+    #         x_next,
+    #         y_next,
+    #         self._wrap_angle(theta_next),
+    #         self._wrap_angle(phi_next),
+    #     ])
 
     def solve_control(self, start_pos, goal_pos) -> NDArray[np.float64]:
         """Solve the MPC optimization problem and return both controls and predicted trajectory."""
